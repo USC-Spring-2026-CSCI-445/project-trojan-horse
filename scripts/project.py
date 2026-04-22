@@ -13,8 +13,8 @@ from sensor_msgs.msg import LaserScan
 from tf.transformations import euler_from_quaternion
 
 # Import your existing implementations
-from lab8_9 import Map, ParticleFilter, angle_to_neg_pi_to_pi  # :contentReference[oaicite:2]{index=2}
-from lab10 import RrtPlanner, PIDController as WaypointPID, GOAL_THRESHOLD  # :contentReference[oaicite:3]{index=3}
+from lab8_9_starter import Map, ParticleFilter, angle_to_neg_pi_to_pi  # :contentReference[oaicite:2]{index=2}
+from lab10_starter import RrtPlanner, PIDController as WaypointPID, GOAL_THRESHOLD  # :contentReference[oaicite:3]{index=3}
 
 
 class PFRRTController:
@@ -182,6 +182,49 @@ class PFRRTController:
         """
         
         ######### Your code starts here #########
+        stable = 0
+        step = 0
+        rate = rospy.Rate(10)
+        while not rospy.is_shutdown() and step <max_steps:
+            ranges = self.laserscan.ranges
+            front_idx = len(ranges) // 2
+            front_dist = ranges[front_idx]
+            if np.isinf(front_dist) or np.isnan(front_dist):
+                front_dist = 10.0
+            if front_dist < 0.45:
+                self.move_forward(-0.12)
+                turn_dir = 1 if step % 2 ==0 else -1
+                self.rotate_in_place(turn_dir *math.pi / 2)
+            else: 
+                self.move_forward(0.2)
+            
+            self.take_measurements()
+            self._pf.visualize_particles()
+            self._pf.visualize_estimate()
+            step += 1
+
+            est_x, est_y, est_theta = self._pf.get_estimate()
+            all_x = np.array([p.x for p in self._pf._particles], dtype=np.float64)
+            all_y = np.array([p.y for p in self._pf._particles], dtype=np.float64)
+            all_theta = np.array([p.theta for p in self._pf._particles], dtype=np.float64)
+            spread = np.sqrt(np.var(all_x)+ np.var(all_y))
+            heading = np.sqrt(np.mean(np.sin(all_theta))**2 + np.mean(np.cos(all_theta))**2)
+            xy_dists = np.sqrt((all_x - est_x)**2 +(all_y-est_y)**2)
+            cluster= np.mean(xy_dists <0.2)
+            rospy.loginfo(f"pf info step={step} spread={spread:.3f} heading={heading:.3f} cluster={cluster:.2f}")
+            if spread <0.12 and heading >0.85 and cluster >0.8:
+                stable +=1
+            else:
+                stable=0
+            if stable>=5:
+                rospy.loginfo("particle filter converged")
+                break
+            rate.sleep()
+        est_x, est_y, est_theta = self._pf.get_estimate()
+        rospy.loginfo(f"final guess -- x:{est_x:.3f}  y:{est_y:.3f}  theta:{est_theta:.3f}")
+
+
+
 
         ######### Your code ends here #########
 
@@ -195,7 +238,19 @@ class PFRRTController:
         Generate a path using RRT from PF-estimated start to known goal.
         """
         ######### Your code starts here #########
-
+        est_x, est_y, est_theta = self._pf.get_estimate()
+        start = {"x":est_x,"y":est_y}
+        goal = {"x": self.goal_position["x"], "y": self.goal_position["y"]}
+        rospy.loginfo(f"planning begins")
+        plan,graph = self._planner.generate_plan(start, goal)
+        if len(plan) == 0:
+            rospy.logerr("no plan")
+            return
+        self._planner.visualize_plan(plan)
+        self._planner.visualize_graph(graph)
+        self.plan = plan
+        self.current_wp_idx = 0
+        rospy.loginfo(f"there are {len(plan)} waypoints")
         ######### Your code ends here #########
 
     # ----------------------------------------------------------------------
@@ -207,6 +262,86 @@ class PFRRTController:
         Keep updating PF along the way.
         """
         ######### Your code starts here #########
+        if not self.plan or len(self.plan) ==0:
+            rospy.logerr("no plan")
+            return
+        rate = rospy.Rate(10)
+        replan_interval =15
+        max_replan_attempts =3
+        replan_count = 0
+        while not rospy.is_shutdown():
+            if self.current_wp_idx >=len(self.plan):
+                rospy.loginfo("waypoints reached")
+                self.cmd_pub.publish(Twist())
+                break
+            target =self.plan[self.current_wp_idx]
+            est_x, est_y, est_theta = self._pf.get_estimate()
+            pos = {"x": est_x, "y": est_y, "theta": est_theta}
+            dx=target["x"] - pos["x"]
+            dy=target["y"] - pos["y"]
+            dist= sqrt(dx**2 + dy**2)
+            ranges = self.laserscan.ranges
+            front_idx = len(ranges) // 2
+            front_dist = ranges[front_idx]
+
+            if np.isinf(front_dist) or np.isnan(front_dist):
+                front_dist = 10.0
+
+            if front_dist < 0.35:
+                rospy.logwarn("obstacle too close")
+                twist = Twist()
+                twist.linear.x = 0.0
+                left_idx = min(len(ranges)-1, front_idx + 20)
+                right_idx = max(0, front_idx - 20)
+                left = ranges[left_idx]
+                right = ranges[right_idx]
+                if np.isinf(left): left = 10.0
+                if np.isinf(right): right = 10.0
+                if left > right:
+                    twist.angular.z = 0.6   
+                else:
+                    twist.angular.z = -0.6  
+                self.cmd_pub.publish(twist)
+                rate.sleep()
+                continue
+            if dist < GOAL_THRESHOLD:
+                self.current_wp_idx += 1
+                if (self.current_wp_idx % replan_interval ==0 and self.current_wp_idx <len(self.plan) and replan_count < max_replan_attempts):
+                    self.take_measurements()
+                    est_x, est_y, _ = self._pf.get_estimate()
+                    odom_x = self.current_position["x"]
+                    odom_y = self.current_position["y"]
+                    drift = sqrt((est_x - odom_x)**2 + (est_y - odom_y)**2)
+                    rospy.loginfo(f"drift: {drift:.3f}m")
+                    if drift > 0.25:
+                        rospy.logwarn(f"drift {drift:.3f}m -> replan")
+                        new_start = {"x":est_x,"y":est_y}
+                        new_goal = {"x": self.goal_position["x"], "y": self.goal_position["y"],}
+                        new_plan, new_graph = self._planner.generate_plan(new_start, new_goal)
+                        if len(new_plan)>0:
+                            self.plan = new_plan
+                            self.current_wp_idx = 0
+                            self._planner.visualize_plan(new_plan)
+                            self._planner.visualize_graph(new_graph)
+                            replan_count += 1
+                            rospy.loginfo(f" good replan")
+                        else:
+                            rospy.logerr("replan failed")
+                rate.sleep()
+                continue
+            desired_heading = atan2(dy,dx)
+            heading_err=angle_to_neg_pi_to_pi(desired_heading - pos["theta"])
+            twist=Twist()
+            if abs(heading_err) > 0.2:
+                twist.linear.x =0
+                twist.angular.z = max(-2.0, min(2.0,1.8*heading_err))
+            else:
+                twist.linear.x =min(0.2,0.18*dist)
+                twist.angular.z= max(-1.5,min(1.5, 1.4*heading_err))
+            self.cmd_pub.publish(twist)
+            self.take_measurements()
+            self._pf.visualize_estimate()
+            rate.sleep()
 
         ######### Your code ends here #########
 
