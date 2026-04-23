@@ -15,6 +15,7 @@ from tf.transformations import euler_from_quaternion
 
 # Import your existing implementations
 from lab8_9_starter import Map, ParticleFilter,Particle,  PIDController, angle_to_neg_pi_to_pi # :contentReference[oaicite:2]{index=2}
+from lab8_9_starter import Controller as LabController
 from lab10_starter import RrtPlanner, PIDController as WaypointPID, GOAL_THRESHOLD  # :contentReference[oaicite:3]{index=3}
 
 
@@ -31,14 +32,16 @@ class PFRRTController:
         self._pf = pf
         self._planner = planner
         self.goal_position = goal_position
+        from lab8_9_starter import Controller as LabController
 
+        self.lab_ctrl = LabController(self._pf, init_ros=False)
         # Robot state from odom / laser
         self.current_position: Optional[Dict[str, float]] = None
         #self.last_odom: Optional[Dict[str, float]] = None
         self.laserscan: Optional[LaserScan] = None
 
         # Command publisher
-        self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
+        #self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
         
         # Subscribers
         self.odom_sub = rospy.Subscriber("/odom", Odometry, self.odom_callback)
@@ -69,7 +72,8 @@ class PFRRTController:
         )
         self.current_position = {"x": pose.position.x, "y": pose.position.y, "theta": theta}
 
-        new_pose = {"x": pose.position.x, "y": pose.position.y, "theta": theta}
+        #new_pose = {"x": pose.position.x, "y": pose.position.y, "theta": theta}
+        self.lab_ctrl.current_position = self.current_position
 
         # Use odom delta to propagate PF motion model
         # if self.last_odom is not None:
@@ -90,70 +94,51 @@ class PFRRTController:
         # self.current_position = new_pose
     def laserscan_callback(self, msg: LaserScan):
         self.laserscan = msg
+        self.lab_ctrl.laserscan = msg
 
     # ----------------------------------------------------------------------
     # Low-level motion primitives
     # ----------------------------------------------------------------------
-    def move_forward(self, distance: float):
-        """
-        Move the robot straight by a commanded distance (meters)
-        using a constant velocity profile.
-        """
-        #made some changes as needed for our code
-        dist_pid = PIDController(kp=1.23, ki=0.1, kd=1.4, kS=0.5, u_min=-0.2, u_max=0.2)
-        ang_pid = PIDController(kp=1.23, ki=0.19, kd=0.9, kS=0.4, u_min=-2.026, u_max=2.026)
-        origin = copy.deepcopy(self.current_position)
-        base_theta = origin["theta"]
-        loop_rate = rospy.Rate(20)
-        while not rospy.is_shutdown():
-            curr = self.current_position
-            offset_x = curr["x"] - origin["x"]
-            offset_y = curr["y"] - origin["y"]
-            comp_x = offset_x * math.cos(base_theta)
-            comp_y = offset_y * math.sin(base_theta)
-            traveled = comp_x + comp_y
-            err_dist = goal_dist - traveled
-            theta_now = curr["theta"]
-            err_theta = angle_to_neg_pi_to_pi(base_theta - theta_now)
-            if abs(err_dist) < 0.02:
-                break
-            v_cmd = dist_pid.control(err_dist, rospy.get_time())
-            w_cmd = ang_pid.control(err_theta, rospy.get_time())
-            msg = Twist()
-            msg.linear.x = v_cmd
-            msg.angular.z = w_cmd
-            self.cmd_pub.publish(msg)
-            loop_rate.sleep()
-        self.cmd_pub.publish(Twist())
-        end = self.current_position
-        dx_total = end["x"] - origin["x"]
-        dy_total = end["y"] - origin["y"]
-        dtheta_total = angle_to_neg_pi_to_pi(end["theta"] - base_theta)
-        self._pf.move_by(dx_total, dy_total, dtheta_total)
-        self._pf.visualize_particles()
+    # def move_forward(self, distance: float):
+    #     """
+    #     Move the robot straight by a commanded distance (meters)
+    #     using a constant velocity profile.
+    #     """
+    #     twist = Twist()
+    #     speed = 0.15  # m/s
+    #     twist.linear.x = speed if distance >= 0 else -speed
 
-    def rotate_in_place(self, angle: float):
-        """
-        Rotate robot by a relative angle (radians).
-        """
-        #made changes as needed
-        rotate = PIDController(kp=1.23, ki=0.2, kd=1.1, kS=0.5, u_min=-2.026, u_max=2.026)
-        begin = self.current_position["theta"]
-        end = angle_to_neg_pi_to_pi(begin + angle)
-        rate = rospy.Rate(20)
-        while not rospy.is_shutdown():
-            error = angle_to_neg_pi_to_pi(end - self.current_position["theta"])
-            if abs(error) < 0.03:
-                break
-            angularvelo = rotate.control(error, rospy.get_time())
-            twist = Twist()
-            twist.angular.z = angularvelo
-            self.cmd_pub.publish(twist)
-            rate.sleep()
-        self.cmd_pub.publish(Twist())
-        realchange = angle_to_neg_pi_to_pi(self.current_position["theta"] - begin)
-        self._pf.move_by(0, 0, realchange)
-        self._pf.visualize_particles()
+    #     duration = abs(distance) / speed if speed > 0 else 0.0
+    #     start_time = rospy.Time.now().to_sec()
+    #     r = rospy.Rate(10)
+
+    #     while (rospy.Time.now().to_sec() - start_time) < duration and (not rospy.is_shutdown()):
+    #         self.cmd_pub.publish(twist)
+    #         r.sleep()
+
+    #     # Stop
+    #     twist.linear.x = 0.0
+    #     self.cmd_pub.publish(twist)
+
+    # def rotate_in_place(self, angle: float):
+    #     """
+    #     Rotate robot by a relative angle (radians).
+    #     """
+    #     twist = Twist()
+    #     angular_speed = 0.8  # rad/s
+    #     twist.angular.z = angular_speed if angle >= 0.0 else -angular_speed
+
+    #     duration = abs(angle) / angular_speed if angular_speed > 0 else 0.0
+    #     start_time = rospy.Time.now().to_sec()
+    #     r = rospy.Rate(10)
+
+    #     while (rospy.Time.now().to_sec() - start_time) < duration and (not rospy.is_shutdown()):
+    #         self.cmd_pub.publish(twist)
+    #         r.sleep()
+
+    #     # Stop
+    #     twist.angular.z = 0.0
+    #     self.cmd_pub.publish(twist)
 
     # ----------------------------------------------------------------------
     # Measurement update
@@ -233,17 +218,17 @@ class PFRRTController:
             if math.isnan(wallfrontdist) or (wallfrontdist != float("inf") and wallfrontdist < 0.55): #wall in front
                 rospy.loginfo("wall in front")
                 turn = np.random.choice([pi /2, -pi/ 2])#truning
-                self.rotate_in_place(turn)
+                self.lab_ctrl.rotate_action(turn)
             else:
                 if np.random.rand() < rando_prob: #random turn for exploration
                     rospy.loginfo("random turn")
                     turn = np.random.choice([pi/ 2, -pi/ 2])
-                    self.rotate_in_place(turn)
+                    self.lab_ctrl.rotate_action(turn)
                 else:
-                    self.move_forward(0.4)
+                    self.lab_ctrl.forward_action(0.4)
             self.take_measurements()
             rate.sleep()
-        self.cmd_pub.publish(Twist())
+        self.lab_ctrl.forward_action(0.0)
         ######### Your code ends here #########
 
         
@@ -302,7 +287,7 @@ class PFRRTController:
             if wp_index >= len(self.plan):
                 ctrl_msg.linear.x = 0.0 #stop robo if all waypoints reached
                 ctrl_msg.angular.z = 0.0
-                self.cmd_pub.publish(ctrl_msg)
+                self.lab_ctrl.robot_ctrl_pub.publish(ctrl_msg)
                 break
             target = self.plan[wp_index]#get a target waypoint
             dx = target["x"] - self.current_position["x"]#get dist to target waypoint
@@ -318,7 +303,7 @@ class PFRRTController:
                 velocitylin = 0.0#dont move if we face the wrong way
             ctrl_msg.linear.x = velocitylin
             ctrl_msg.angular.z = velocityang
-            self.cmd_pub.publish(ctrl_msg)
+            self.lab_ctrl.robot_ctrl_pub.publish(ctrl_msg)
             if dist < GOAL_THRESHOLD: #check if we reached
                 wp_index += 1
 
