@@ -34,7 +34,7 @@ class PFRRTController:
         self.goal_position = goal_position
         from lab8_9_starter import Controller as LabController
 
-        self.lab_ctrl = LabController(self._pf, init_ros=False)
+        self.lab_ctrl = LabController(self._pf)
         # Robot state from odom / laser
         self.current_position: Optional[Dict[str, float]] = None
         #self.last_odom: Optional[Dict[str, float]] = None
@@ -176,8 +176,8 @@ class PFRRTController:
         """
         ######### Your code starts here #########
         rate = rospy.Rate(10)
-        rando_prob = 0.1 #helpful to explore rando
-        spread_strict = 0.08 #how strict i want the cluster to be
+        rando_prob = 0.02 #helpful to explore rando
+        spread_strict = 0.15 #how strict i want the cluster to be
         num_converge = 1 #i only wanna converge once
         con_cnt = 0 #converge count
         while not rospy.is_shutdown():
@@ -228,7 +228,7 @@ class PFRRTController:
                     self.lab_ctrl.forward_action(0.4)
             self.take_measurements()
             rate.sleep()
-        self.lab_ctrl.forward_action(0.0)
+        self.lab_ctrl.robot_ctrl_pub.publish(Twist())
         ######### Your code ends here #########
 
         
